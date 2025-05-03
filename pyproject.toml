@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telegram-moderator-bot"
+version = "0.1.0"
+description = "Bot moderador para Telegram usando LlamaGuard y PydanticAI"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "Tu Nombre", email = "tu.email@ejemplo.com"},
+]
+dependencies = [
+    "python-telegram-bot>=20.0",
+    "pydantic>=2.0.0",
+    "pydantic-ai>=0.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "mypy",
+    "pytest",
+]
+
+[project.scripts]
+telegram-moderator = "telegram_moderator_bot.main:main"
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
