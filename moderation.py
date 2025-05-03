@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 import logging
 import asyncio
+from langchain_ollama import OllamaLLM
+from langchain.prompts import PromptTemplate
 
 # Bibliotecas para Telegram
 from telegram import Update, Bot
@@ -42,10 +44,10 @@ if not TELEGRAM_BOT_TOKEN:
 
 # Modelos para la evaluación de mensajes
 class ModeratorOutput(BaseModel):
-    """Salida del agente moderador con PydanticAI"""
+    """Salida del agente moderador"""
     is_appropriate: bool = Field(description="Si el mensaje cumple con las reglas del grupo")
     violation_reason: Optional[str] = Field(None, description="Razón por la que el mensaje viola las reglas")
-    improved_message: Optional[str] = Field(None, description="Versión mejorada del mensaje si contiene lenguaje inapropiado pero es válido")
+    improved_message: Optional[str] = Field(None, description="Versión mejorada del mensaje si es posible")
 
 
 @dataclass
@@ -57,51 +59,38 @@ class ModeratorDependencies:
 
 
 # Inicializar el agente de PydanticAI con LlamaGuard
-def setup_moderator_agent(model_provider="ollama"):
-    """Configurar y devolver el agente moderador utilizando PydanticAI y LlamaGuard"""
+def setup_moderator_agent(provider="ollama", **kwargs):
+    """Configurar y devolver el agente moderador utilizando LangChain y Ollama"""
     
-    # Seleccionar el modelo y proveedor basado en la configuración
-    if model_provider == "ollama":
-        from pydantic_ai.models import OllamaModel
-        model = OllamaModel(model_name="llama-guard:latest")
-    elif model_provider == "replicate":
-        from pydantic_ai.models import ReplicateModel
-        model = ReplicateModel(model_name="meta/llama-guard-3-8b")
-    elif model_provider == "moderation_api":
-        from pydantic_ai.models import ModerationApiLlamaGuardModel
-        model = ModerationApiLlamaGuardModel(api_key=os.environ.get("MODERATION_API_KEY"))
-    else:
-        raise ValueError(f"Proveedor de modelo no soportado: {model_provider}")
-    
-    # Crear el agente moderador
-    agent = Agent(
-        "moderator",
-        model=model,
-        deps_type=ModeratorDependencies,
-        output_type=ModeratorOutput,
+    # Configurar Ollama
+    llm = OllamaLLM(
+        model="llama3.2:latest",
+        base_url=kwargs.get("host", "http://localhost:11434")
     )
     
-    @agent.system_prompt
-    def moderator_system_prompt(ctx: RunContext[ModeratorDependencies]) -> str:
-        """Definir el prompt del sistema para el moderador"""
-        return f"""
-        Eres un moderador de un grupo de Telegram encargado de verificar si los mensajes cumplen
-        con las reglas y lineamientos del grupo. Debes evaluar cada mensaje y determinar si es apropiado.
-        
-        LINEAMIENTOS DEL GRUPO:
-        {ctx.deps.group_guidelines}
-        
-        Tu tarea es analizar el siguiente mensaje enviado por un usuario y determinar:
-        1. Si el mensaje es apropiado según los lineamientos del grupo
-        2. Si no es apropiado, explicar por qué
-        3. Si contiene lenguaje inapropiado pero la intención es válida, sugerir una mejor redacción
-        
-        MENSAJE A EVALUAR:
-        Usuario: {ctx.deps.username}
-        Mensaje: {ctx.deps.message_text}
-        """
+    # Definir el template del prompt
+    prompt_template = """
+    Actúa como un moderador y evalúa si el siguiente mensaje cumple con las reglas del grupo.
     
-    return agent
+    REGLAS DEL GRUPO:
+    {group_guidelines}
+    
+    MENSAJE A EVALUAR:
+    Usuario: {username}
+    Mensaje: {message_text}
+    
+    INSTRUCCIONES:
+    1. Responde en la primera línea solo con "safe" o "unsafe"
+    2. Si es unsafe, explica en la siguiente línea por qué viola las reglas
+    3. Si es posible mejorar el mensaje, sugiere una versión apropiada
+    """
+    
+    prompt = PromptTemplate(
+        template=prompt_template,
+        input_variables=["group_guidelines", "username", "message_text"]
+    )
+    
+    return prompt | llm
 
 
 # Funciones para gestionar el bot de Telegram
@@ -146,72 +135,73 @@ async def get_group_description(bot: Bot, chat_id: int) -> str:
 
 async def moderate_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Moderar mensajes del grupo usando LlamaGuard"""
-    # Ignorar mensajes de comandos y del propio bot
-    if update.message.text.startswith('/') or update.effective_user.id == context.bot.id:
-        return
-    
-    # Obtener información necesaria
-    chat_id = update.effective_chat.id
-    message_id = update.message.message_id
-    user = update.effective_user
-    username = user.username or user.first_name
-    text = update.message.text
-    
-    # Obtener lineamientos del grupo
-    group_guidelines = await get_group_description(context.bot, chat_id)
-    
-    # Informar al usuario que su mensaje está siendo revisado
-    status_message = await context.bot.send_message(
-        chat_id=chat_id,
-        reply_to_message_id=message_id,
-        text="⏳ Revisando este mensaje..."
-    )
-    
     try:
-        # Configurar las dependencias para el agente
-        deps = ModeratorDependencies(
-            group_guidelines=group_guidelines,
-            message_text=text,
-            username=username
-        )
+        # Ignorar mensajes de comandos y del propio bot
+        if update.message.text.startswith('/') or update.effective_user.id == context.bot.id:
+            return
         
-        # Inicializar el agente moderador
-        moderator_agent = setup_moderator_agent()
+        chat_id = update.effective_chat.id
+        message_id = update.message.message_id
+        user = update.effective_user
+        username = user.username or user.first_name
+        text = update.message.text
         
-        # Evaluar el mensaje
-        result = await moderator_agent.run(deps=deps)
+        # Obtener lineamientos del grupo
+        group_guidelines = await get_group_description(context.bot, chat_id)
         
-        # Procesar el resultado
-        if not result.is_appropriate:
-            # Eliminar el mensaje inapropiado
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-            
-            # Notificar al usuario
-            violation_message = (
-                f"@{username}, tu mensaje ha sido eliminado porque viola los lineamientos del grupo:\n\n"
-                f"{result.violation_reason}\n\n"
-            )
-            
-            # Agregar sugerencia de mejora si está disponible
-            if result.improved_message:
-                violation_message += f"Sugerencia de redacción alternativa:\n{result.improved_message}"
-            
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=violation_message,
-                reply_to_message_id=None  # No responder al mensaje original ya que fue eliminado
-            )
-        else:
-            # El mensaje es apropiado
-            await context.bot.delete_message(chat_id=chat_id, message_id=status_message.message_id)
-    
-    except Exception as e:
-        logger.error(f"Error al moderar el mensaje: {e}")
-        await context.bot.edit_message_text(
+        # Informar al usuario que su mensaje está siendo revisado
+        status_message = await context.bot.send_message(
             chat_id=chat_id,
-            message_id=status_message.message_id,
-            text="❌ No se pudo revisar este mensaje debido a un error técnico."
+            reply_to_message_id=message_id,
+            text="⏳ Revisando este mensaje..."
         )
+        
+        try:
+            # Configurar el agente moderador
+            chain = setup_moderator_agent()
+            
+            # Evaluar el mensaje
+            result = await chain.ainvoke({
+                "group_guidelines": group_guidelines,
+                "message_text": text,
+                "username": username
+            })
+            
+            lines = result.strip().split('\n')
+            is_safe = lines[0].lower().strip() == "safe"
+            
+            if not is_safe:
+                # Eliminar el mensaje inapropiado
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                
+                violation_message = (
+                    f"@{username}, tu mensaje ha sido eliminado porque viola los lineamientos del grupo:\n\n"
+                    f"{lines[1] if len(lines) > 1 else 'Violación de reglas'}\n\n"
+                )
+                
+                if len(lines) > 2:
+                    violation_message += f"Sugerencia de redacción alternativa:\n{lines[2]}"
+                
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=violation_message
+                )
+            else:
+                # El mensaje es apropiado
+                await context.bot.delete_message(chat_id=chat_id, message_id=status_message.message_id)
+                
+        except Exception as e:
+            error_detail = f"Error en la moderación: {str(e)}"
+            logger.error(error_detail)
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message.message_id,
+                text=f"❌ Error técnico detallado: {error_detail}"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error general: {str(e)}")
+        await update.message.reply_text(f"❌ Error general del bot: {str(e)}")
 
 
 def main() -> None:
