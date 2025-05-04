@@ -14,5 +14,3 @@ if not TELEGRAM_BOT_TOKEN:
 # Configuración del modelo LlamaGuard
 LLAMAGUARD_PROVIDER = os.getenv("LLAMAGUARD_PROVIDER", "ollama")  # ollama, replicate, moderation_api
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
-MODERATION_API_KEY = os.getenv("MODERATION_API_KEY")

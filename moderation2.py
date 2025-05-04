@@ -14,6 +14,9 @@ import logging
 import asyncio
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Bibliotecas para Telegram
 from telegram import Update, Bot
